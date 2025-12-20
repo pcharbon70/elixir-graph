@@ -1,6 +1,6 @@
 # Elixir Graph
 
-Ontology-augmented code generation for Elixir combining RDF/OWL semantic annotations with neural language models to produce code that is functionally correct, idiomatic, and secure.
+Ontology-augmented code generation for Elixir combining RDF/OWL semantic annotations with neural language models to produce code that is functionally correct, idiomatic, secure, and well-tested.
 
 ## Project Goals
 
@@ -12,6 +12,7 @@ Research on knowledge-enhanced language models (ERNIE, K-BERT, GraphCodeBERT) de
 - **OTP pattern recognition** (+18% pass@1)
 - **Security vulnerability prevention** (35-50% F1 improvement with contrastive learning)
 - **Code quality compliance** (2.3x improvement on difficult tasks with curriculum learning)
+- **Clarification-driven generation** (+5-10% pass@1 when asking one well-chosen question)
 
 ## Architecture
 
@@ -39,88 +40,118 @@ Four ontology files define Elixir semantics (available at [pcharbon70/elixir-ont
 
 ### Multi-Task Learning Architecture
 
-The model uses a shared transformer encoder with task-specific heads:
+The model uses a shared encoder-decoder transformer (CodeT5-style, 125M-350M parameters) with task-specific heads:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Shared Transformer Encoder                │
-│                  (Code + Ontology Embeddings)                │
-└─────────────────────────────────────────────────────────────┘
-        │                │                │                │
-        ▼                ▼                ▼                ▼
-┌───────────┐    ┌───────────┐    ┌───────────┐    ┌───────────┐
-│ Generation│    │  Quality  │    │ Security  │    │Explanation│
-│    Head   │    │   Head    │    │   Head    │    │   Head    │
-│  (LM)     │    │ (Credo)   │    │(Sobelow)  │    │ (Seq2Seq) │
-└───────────┘    └───────────┘    └───────────┘    └───────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Shared Transformer Encoder                           │
+│                       (Code + Ontology Embeddings)                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+        │            │            │            │            │            │
+        ▼            ▼            ▼            ▼            ▼            ▼
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│   Code   │  │ Quality  │  │ Security │  │  Test    │  │Clarify   │  │Explanation│
+│   Gen    │  │  (Credo) │  │(Sobelow) │  │   Gen    │  │ Question │  │   Gen    │
+└──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘
 ```
+
+## Core Capabilities
+
+### 1. Code Generation with Ontology Augmentation
+
+Standard code generation enhanced with semantic knowledge from RDF/OWL ontologies, enabling better understanding of OTP patterns, type relationships, and Elixir idioms.
+
+### 2. Interactive Clarification
+
+Before generating code for ambiguous requirements, the model can ask a single clarifying question. The system:
+
+- **Detects ambiguity** by generating multiple samples and measuring behavioral divergence
+- **Quantifies uncertainty** using semantic entropy over functional clusters
+- **Generates targeted questions** using Expected Value of Perfect Information ranking
+- **Conditions generation** on user answers via cross-attention mechanisms
+
+Example triggers for clarification:
+- "Process orders" → "Should failures raise exceptions or return `{:error, reason}` tuples?"
+- "Store state" → "Should this use GenServer (complex sync) or Agent (simple read/write)?"
+- "Handle requests" → "What fields does the User schema contain?"
+
+### 3. Test Generation with Mutation Feedback
+
+The model generates high-quality tests using execution feedback from Muzak mutation testing:
+
+- **Pre-training objectives**: Masked span prediction, fill-in-middle, assert completion
+- **Execution feedback**: Muzak mutation scores as RL rewards—tests that kill more mutants get higher rewards
+- **Specialized adapters**: Lorax LoRA adapters for ExUnit, StreamData (property tests), and LiveViewTest
+
+Target test distribution: 60% ExUnit, 25% StreamData, 15% LiveViewTest
+
+### 4. Quality and Security Enforcement
+
+Multi-task training on Credo (83+ checks) and Sobelow (30+ vulnerability types) with constrained decoding at inference time.
 
 ## Training Pipeline
 
 ### Data Sources
 
 - **Minimum viable corpus**: ~10,000 annotated Elixir functions with ontology coverage
-- **Sources**: GitHub repositories (filtered by stars/forks), HexDocs, Elixir Forum, Stack Overflow
-- **Augmentation target**: 50,000 total samples via synthetic generation
+- **Primary sources**: Hex.pm packages (~17,000+), GitHub Elixir repos (~25,000-50,000)
+- **Quality filtering**: Must have tests, documentation, pass Credo, recent maintenance
+- **Augmentation target**: 50,000+ samples via synthetic generation and contrastive pairs
 
 ### Training Objectives
 
-1. **Code Generation** - Masked language modeling with type-specific masking (separating identifiers, operators, keywords)
-
-2. **Quality Compliance** - Classification of Credo rule violations across 5 categories:
-   - Consistency (cross-file uniformity)
-   - Design (architectural concerns)
-   - Readability (convention adherence)
-   - Refactor (simplification opportunities)
-   - Warning (likely bugs)
-
-3. **Security Detection** - Classification of Sobelow findings mapped to CWE:
-   - Command Injection (CWE-78)
-   - SQL Injection (CWE-89)
-   - XSS (CWE-79)
-   - Directory Traversal (CWE-22)
-   - Denial of Service / Atom Exhaustion (CWE-400)
-   - Unsafe Deserialization (CWE-502)
-   - Remote Code Execution (CWE-94)
-
-4. **Explanation Generation** - Natural language explanations grounded in rule documentation via retrieval-augmented generation
+1. **Code Generation** - Masked language modeling with type-specific masking
+2. **Quality Compliance** - Credo rule violation classification (5 categories)
+3. **Security Detection** - Sobelow finding classification (mapped to CWE)
+4. **Test Generation** - Code-to-test and test-to-code bidirectional training
+5. **Clarification** - Ask-or-proceed decision + question generation
+6. **Explanation Generation** - Natural language grounded in documentation
 
 ### Curriculum Learning Schedule
-
-Training progresses through phases of increasing complexity:
 
 | Phase | Epochs | Focus |
 |-------|--------|-------|
 | 1 | 1-10 | Code-only MLM |
-| 2 | 11-30 | Code + simple single-relation ontology annotations |
+| 2 | 11-30 | Code + simple ontology annotations |
 | 3 | 31-50 | Code + full multi-hop ontology graphs |
-| 4 | 51+ | Fine-tuning on complex examples with complete augmentation |
+| 4 | 51+ | Complex examples + clarification training |
 
-For Credo rules, the curriculum orders by pattern complexity:
-1. Surface token patterns (FunctionNames, IoInspect)
-2. Local structural patterns (ModuleDoc, MaxLineLength)
-3. Cross-function analysis (Nesting, CyclomaticComplexity)
-4. Corpus-level patterns (DuplicatedCode, Consistency checks)
+### Reinforcement Learning with Execution Feedback
 
-### Contrastive Learning
-
-The model learns quality distinctions through programmatically generated code pairs:
-
-```elixir
-# Clean code (positive)
-def process(data), do: transform(data)
-
-# Violating code (negative) - IO.inspect injected
-def process(data), do: data |> IO.inspect(label: :debug) |> transform()
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Generate   │────▶│  Run Muzak   │────▶│   Compute    │
+│    Tests     │     │  Mutations   │     │   Reward     │
+└──────────────┘     └──────────────┘     └──────────────┘
+                                                 │
+┌──────────────┐     ┌──────────────┐            │
+│   Update     │◀────│   Policy     │◀───────────┘
+│   Model      │     │   Gradient   │
+└──────────────┘     └──────────────┘
 ```
 
-InfoNCE loss pushes clean code representations away from violating variants in embedding space.
+Reward = mutation kill rate (tests that catch more bugs score higher)
 
 ## Inference Pipeline
 
-### Constrained Decoding
+### Clarification-First Flow
 
-Three layers of constraint enforcement during generation:
+```
+┌─────────┐     ┌───────────┐     ┌─────────┐
+│ Prompt  │────▶│  Analyze  │────▶│Ambiguous│───Yes──▶ Ask Question ──▶ Get Answer
+└─────────┘     │ Ambiguity │     │    ?    │                              │
+                └───────────┘     └─────────┘                              │
+                                       │                                   │
+                                      No                                   │
+                                       │                                   │
+                                       ▼                                   ▼
+                              ┌─────────────────┐◀──────────────────────────┘
+                              │ Generate Code   │
+                              │ (with context)  │
+                              └─────────────────┘
+```
+
+### Constrained Decoding
 
 | Layer | Approach | Overhead | Error Reduction |
 |-------|----------|----------|-----------------|
@@ -148,75 +179,84 @@ Three layers of constraint enforcement during generation:
 
 | Component | Library | Purpose |
 |-----------|---------|---------|
-| Neural Networks | Axon | Custom layers, graph attention |
-| Tokenization | Bumblebee | BPE via Rust bindings |
+| Neural Networks | Axon | Custom layers, graph attention, transformers |
+| Tokenization | Bumblebee + custom | BPE with Elixir-specific symbols (`|>`, `:ok`, `@spec`) |
 | Acceleration | EXLA | GPU/TPU backend |
+| LoRA Adaptation | Lorax | Parameter-efficient fine-tuning for test type specialization |
 | RDF Processing | rdf-ex | Ontology parsing and manipulation |
 | Code Quality | Credo | 83+ checks, programmatic API |
 | Security | Sobelow | 30+ vulnerability types, JSON output |
+| Mutation Testing | Muzak | Execution feedback for test quality |
+
+### Model Sizing
+
+| Configuration | Parameters | Memory | Use Case |
+|---------------|------------|--------|----------|
+| Base model | 125M | ~1-2 GB | Development, fast iteration |
+| Full model | 350M | ~4-6 GB | Production deployment |
+| LoRA adapters | 2-4M each | ~4-10 MB | Test type specialization |
 
 ### Hybrid Architecture
 
 - **Python**: Graph preprocessing, embedding generation (pyRDF2Vec, OWL2Vec*)
-- **Elixir**: Training loop, inference, deployment
-
-This balances implementation effort against the goal of native Elixir ML tooling.
+- **Elixir**: Training loop, inference, deployment via Nx.Serving
 
 ## Evaluation
 
 ### Primary Metrics
 
 - **pass@k**: Probability that at least one of k samples passes all tests
-- **secure-pass@k**: Probability of generating code that is both secure AND functionally correct
-- **Credo clean rate**: Percentage of generations with zero quality violations
-- **CodeBLEU**: Semantic similarity combining n-gram, AST, and data-flow matching
+- **secure-pass@k**: Code that is both secure AND functionally correct
+- **Credo clean rate**: Percentage with zero quality violations
+- **Mutation score**: Percentage of Muzak mutations killed by generated tests
+- **ΔPass@1**: Improvement from clarification vs. direct generation
 
 ### Expected Improvements
 
-| Dimension | Code-Only Baseline | With Ontology | Expected Δ |
-|-----------|-------------------|---------------|------------|
+| Dimension | Baseline | With Full System | Expected Δ |
+|-----------|----------|------------------|------------|
 | pass@1 (basic patterns) | ~65% | ~72% | +7% |
 | pass@1 (OTP-specific) | ~40% | ~58% | +18% |
+| pass@1 (with clarification) | ~62% | ~70% | +8% |
 | Type inference accuracy | ~45% | ~70% | +25% |
-| Semantic probing tasks | ~60% | ~80% | +20% |
-
-### Ablation Studies
-
-Isolating component contributions:
-
-| Configuration | Component Removed | Expected Impact |
-|--------------|-------------------|-----------------|
-| Full model | None (baseline) | Reference |
-| No type specs | @spec, @type | Type inference degradation |
-| No behaviours | Behaviour semantics | Pattern recognition loss |
-| No OTP patterns | Supervisor/GenServer ontology | Concurrency understanding loss |
-| No Credo training | Quality compliance head | Increased style violations |
-| No security training | Security detection head | Increased vulnerabilities |
+| Test mutation score | ~50% | ~75% | +25% |
 
 ## Project Status
 
 **Current Phase**: Research and planning
 
-See `notes/research/` for detailed analysis:
-- `ontology-augmented-code-generation.md` - Core architecture and training approach
-- `respecting-credo-rules.md` - Credo integration for code quality
-- `code-security-enhancement.md` - Security patterns via Sobelow
+### Research Documentation
+
+```
+notes/research/
+├── 1.01-ontology-augmented-code-generation/
+│   └── 1.01.1-ontology-augmented-code-generation    # Core architecture
+├── 1.02-credo-rules/
+│   └── 1.02.1-respecting-credo-rules.md             # Code quality integration
+├── 1.03-code-security-enhancement/
+│   └── 1.03.1-code-security-enhancement.md          # Security via Sobelow
+├── 1.04-interactive-code-generator/
+│   └── 1.04.1-code-generator-with-intelligent-clarification.md  # Clarification system
+└── 1.05-high-quality-tests/
+    └── 1.05.1-training-high-quality-paired-tests.md # Test generation with Muzak
+```
 
 ## Research Foundation
-
-Key influences on the architecture:
 
 | Paper/System | Contribution |
 |--------------|--------------|
 | GraphCodeBERT | Data flow graph integration, joint pre-training |
 | K-BERT | Knowledge triple injection without retraining |
+| CodeT5/CodeT5+ | Encoder-decoder architecture, multi-task pre-training |
 | TyFlow | Type-constrained generation via synthesis rules |
-| Code Graph Model | Semantic node compression (512x context extension) |
-| ContraCode | Contrastive pre-training for code |
+| ClarifyGPT | Ambiguity detection via code consistency checking |
+| SpecFix | Multi-sample divergence for requirement clarification |
 | Monitor-Guided Decoding | Static analysis in the decoding loop |
 | SynCode | Grammar-constrained generation via DFA masks |
 | VulLLM | Multi-task learning for vulnerability detection |
-| CodeGuard+ | Secure-pass@k evaluation metric |
+| CodeRL | Execution feedback for code generation |
+| Lorax | LoRA implementation for Axon |
+| Muzak | Mutation testing for Elixir |
 
 ## License
 
